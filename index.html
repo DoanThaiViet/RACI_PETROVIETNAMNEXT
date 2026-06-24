@@ -1046,11 +1046,12 @@ $('#excelInput').addEventListener('change', function(e){
     try{
       const wb=XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
       const ds=buildDatasetFromWB(wb);
-      if(!ds.tasks.length) throw new Error('Không thấy nhiệm vụ. Kiểm tra sheet DIM_TASK / FACT RAM / FACT REF.');
+      if(!ds.tasks.length) throw new Error('Không thấy nhiệm vụ. Kiểm tra sheet DATA (hoặc DIM_TASK / FACT RAM / FACT REF).');
       RACI=ds;
       try{ localStorage.setItem(LS_KEY, JSON.stringify(ds)); }catch(_){}
       applyData();
       toast('✅ Đã cập nhật: '+ds.totals.tasks+' nhiệm vụ · '+ds.totals.linhVuc+' lĩnh vực · '+ds.totals.docs+' văn bản');
+      if(ds.warnings&&ds.warnings.length){ setTimeout(()=>toast('⚠️ '+ds.warnings.join(' | '), false), 1300); }
     }catch(err){ console.error(err); toast('❌ '+err.message, false); }
   };
   reader.onerror=()=>toast('❌ Không đọc được file.', false);
@@ -1066,13 +1067,17 @@ function resetData(){
 
 /* ---------- Chuyển đổi workbook → dataset (đồng bộ với build gốc) ---------- */
 function buildDatasetFromWB(wb){
+  const DATA_WARN=[];
   const grid = name => {
     const sh = wb.Sheets[name]; if(!sh) return [];
     return XLSX.utils.sheet_to_json(sh, {header:1, raw:true, defval:null});
   };
-  const LEGAL=['NT/NĐH','PVEP','PVN','UBND tỉnh','BCT/Bộ Ban ngành','TTgCP','QH'];
-  const INTERNAL=['TGĐ PVEP','HĐTĐ PVEP','HĐTV PVEP','HĐTL/HĐ TKTD/HĐTĐ PVN','TGĐ PVN','HĐTV PVN'];
-  const roleOrder={}; LEGAL.forEach((r,i)=>roleOrder[r]=i); INTERNAL.forEach((r,i)=>{ if(!(r in roleOrder)) roleOrder[r]=i; });
+  let LEGAL=['NT/NĐH','PVEP','PVN','UBND tỉnh','BCT/Bộ Ban ngành','TTgCP','QH'];
+  let INTERNAL=['TGĐ PVEP','HĐTĐ PVEP','HĐTV PVEP','HĐTL/HĐ TKTD/HĐTĐ PVN','TGĐ PVN','HĐTV PVN'];
+  const KNOWN_PL=LEGAL.slice(), KNOWN_NB=INTERNAL.slice();
+  let roleOrder={};
+  const rebuildRoleOrder=()=>{ roleOrder={}; LEGAL.forEach((r,i)=>roleOrder[r]=i); INTERNAL.forEach((r,i)=>{ if(!(r in roleOrder)) roleOrder[r]=i; }); };
+  rebuildRoleOrder();
   const assignName={'Đ.xuất':'Đề xuất','X.xét':'Xem xét','T.định':'Thẩm định','Th.qua':'Thông qua','P.cấp/P.duyệt':'Phân cấp / Phê duyệt','P.duyệt':'Phê duyệt','Q.định':'Quyết định','T.hiện':'Thực hiện'};
   const assignOrder={'Đ.xuất':1,'X.xét':2,'T.định':3,'Th.qua':4,'P.cấp/P.duyệt':5,'P.duyệt':6,'Q.định':7,'T.hiện':8};
   const isNull=v=>v==null||v==='null'||(typeof v==='string'&&v.trim()==='');
@@ -1080,33 +1085,60 @@ function buildDatasetFromWB(wb){
   const roleMeta={};
   grid('DIM_ROLE').forEach((r,i)=>{ if(i===0||r[1]==null) return; roleMeta[r[1]]={name:r[2]||r[1], entity:r[3]}; });
 
-  const taskName={}, taskLevel={};
-  grid('DIM_TASK').forEach((r,i)=>{ if(i===0||r[0]==null) return; const id=String(r[0]).trim(); taskName[id]=r[2]; taskLevel[id]=r[1]; });
+  // ===== Nguồn dữ liệu: ưu tiên 1 sheet "DATA"; nếu không có thì dùng 3 sheet cũ (DIM_TASK/FACT RAM/FACT REF) =====
+  const taskName={}, taskLevel={}, TASKROWS=[];
   const linhVuc=[];
-  grid('DIM_TASK').forEach((r,i)=>{ if(i===0) return; if(Number(r[1])===1) linhVuc.push({id:String(r[0]).trim(), name:r[2]}); });
-
   const ramByTask={};
-  grid('FACT RAM').forEach((r,i)=>{ if(i===0||isNull(r[0])||isNull(r[1])||isNull(r[2])) return; const id=String(r[0]).trim(); (ramByTask[id]=ramByTask[id]||[]).push({role:r[1],assign:r[2]}); });
   const refByTask={};
-  grid('FACT REF').forEach((r,i)=>{ if(i===0||isNull(r[0])||isNull(r[1])) return; const id=String(r[0]).trim(); const article=isNull(r[2])?'':r[2]; (refByTask[id]=refByTask[id]||[]).push({doc:r[1],article,entity:r[3]}); });
+  const parseRefCell=(cell,entity)=>{ const out=[]; if(isNull(cell)) return out; String(cell).split(/[;\n]+/).forEach(seg=>{ seg=String(seg).trim(); if(!seg) return; const parts=seg.split('|'); const doc=(parts[0]||'').trim(); const article=(parts.slice(1).join('|')||'').trim(); if(doc) out.push({doc, article, entity}); }); return out; };
+  const dataGrid = grid('DATA');
+  if(dataGrid.length>1){
+    const hdr=(dataGrid[0]||[]).map(h=>String(h==null?'':h).trim());
+    const find=names=>{ for(const n of names){ const i=hdr.findIndex(h=>h.toUpperCase()===n.toUpperCase()); if(i>=0) return i; } return -1; };
+    const cStt=find(['STT','Step_ID','ID']);
+    const cName=find(['NỘI DUNG','Name','Tên']);
+    const cPL=find(['THAM CHIẾU PHÁP LÝ','Tham chiếu pháp lý','REF_PL']);
+    const cNB=find(['THAM CHIẾU NỘI BỘ','Tham chiếu nội bộ','REF_NB']);
+    const META=new Set([cStt,cName,cPL,cNB].filter(i=>i>=0));
+    const stripPrefix=h=>{ const m=/^(PL|NB)\s*[:\-|]\s*(.+)$/i.exec(h); return m?{lane:m[1].toUpperCase(),name:m[2].trim()}:null; };
+    const roleCols=[]; const unknownCols=[];
+    hdr.forEach((h,idx)=>{ if(META.has(idx)||!h) return; const p=stripPrefix(h); if(p){ roleCols.push({idx,role:p.name,lane:p.lane}); } else if(KNOWN_PL.includes(h)){ roleCols.push({idx,role:h,lane:'PL'}); } else if(KNOWN_NB.includes(h)){ roleCols.push({idx,role:h,lane:'NB'}); } else { unknownCols.push(h); } });
+    LEGAL=roleCols.filter(rc=>rc.lane==='PL').map(rc=>rc.role);
+    INTERNAL=roleCols.filter(rc=>rc.lane==='NB').map(rc=>rc.role);
+    rebuildRoleOrder();
+    if(unknownCols.length) DATA_WARN.push('Có cột không rõ nhóm vai trò nên bị BỎ QUA (hãy đặt tên kèm tiền tố "PL:" hoặc "NB:"): '+unknownCols.join(', '));
+    for(let r=1;r<dataGrid.length;r++){
+      const row=dataGrid[r]||[]; const id=isNull(row[cStt])?'':String(row[cStt]).trim(); if(!id) continue;
+      const name=cName>=0?row[cName]:''; const level=id.split('.').length;
+      taskName[id]=name; taskLevel[id]=level; TASKROWS.push({id,level,name});
+      if(level===1) linhVuc.push({id,name});
+      roleCols.forEach(rc=>{ const v=row[rc.idx]; if(!isNull(v)) String(v).split(' / ').forEach(a=>{ a=a.trim(); if(a)(ramByTask[id]=ramByTask[id]||[]).push({role:rc.role,assign:a}); }); });
+      let refs=[]; if(cPL>=0) refs=refs.concat(parseRefCell(row[cPL],'PL')); if(cNB>=0) refs=refs.concat(parseRefCell(row[cNB],'NB'));
+      if(refs.length)(refByTask[id]=refByTask[id]||[]).push(...refs);
+    }
+  } else {
+    grid('DIM_TASK').forEach((r,i)=>{ if(i===0||r[0]==null) return; const id=String(r[0]).trim(); taskName[id]=r[2]; taskLevel[id]=r[1]; TASKROWS.push({id,level:r[1],name:r[2]}); });
+    grid('DIM_TASK').forEach((r,i)=>{ if(i===0) return; if(Number(r[1])===1) linhVuc.push({id:String(r[0]).trim(), name:r[2]}); });
+    grid('FACT RAM').forEach((r,i)=>{ if(i===0||isNull(r[0])||isNull(r[1])||isNull(r[2])) return; const id=String(r[0]).trim(); (ramByTask[id]=ramByTask[id]||[]).push({role:r[1],assign:r[2]}); });
+    grid('FACT REF').forEach((r,i)=>{ if(i===0||isNull(r[0])||isNull(r[1])) return; const id=String(r[0]).trim(); const article=isNull(r[2])?'':r[2]; (refByTask[id]=refByTask[id]||[]).push({doc:r[1],article,entity:r[3]}); });
+  }
 
   const lvOf=id=>String(id).split('.')[0];
   const ancestors=id=>{ const p=String(id).split('.'); const out=[]; for(let k=1;k<p.length;k++){ const pid=p.slice(0,k).join('.'); if(taskName[pid]) out.push(taskName[pid]); } return out; };
 
   const tasks=[];
-  grid('DIM_TASK').forEach((r,i)=>{
-    if(i===0||r[0]==null) return;
-    const id=String(r[0]).trim(), lvId=lvOf(id);
+  TASKROWS.forEach(tr=>{
+    const id=tr.id, lvId=lvOf(id);
     const ram=(ramByTask[id]||[]).map(x=>({role:x.role, roleName:(roleMeta[x.role]&&roleMeta[x.role].name)||x.role, lane:LEGAL.includes(x.role)?'PL':(INTERNAL.includes(x.role)?'NB':'PL'), assign:x.assign, assignName:assignName[x.assign]||x.assign, order:assignOrder[x.assign]||9, rorder:(x.role in roleOrder)?roleOrder[x.role]:99}));
     const refs=(refByTask[id]||[]).map(x=>({doc:x.doc, article:x.article||'', entity:x.entity}));
-    tasks.push({id, level:r[1], name:r[2], linhVuc:lvId, path:ancestors(id), ram, refs, hasRam:ram.length>0, hasRef:refs.length>0});
+    tasks.push({id, level:tr.level, name:tr.name, linhVuc:lvId, path:ancestors(id), ram, refs, hasRam:ram.length>0, hasRef:refs.length>0});
   });
 
   const lvStats=linhVuc.map(lv=>{ const t=tasks.filter(x=>x.linhVuc===lv.id); return {id:lv.id, name:lv.name, total:t.length, withRam:t.filter(x=>x.hasRam).length}; });
   const aS={}, rS={}, dS={};
   tasks.forEach(t=>{ t.ram.forEach(a=>{ aS[a.assign]=(aS[a.assign]||0)+1; rS[a.role]=(rS[a.role]||0)+1; }); t.refs.forEach(rf=>{ dS[rf.doc]=(dS[rf.doc]||0)+1; }); });
   return {
-    generated:new Date().toISOString().slice(0,10), linhVuc, lvStats, tasks, roleMeta, roleOrder, LEGAL, INTERNAL, assignName, assignOrder,
+    generated:new Date().toISOString().slice(0,10), linhVuc, lvStats, tasks, roleMeta, roleOrder, LEGAL, INTERNAL, assignName, assignOrder, warnings:DATA_WARN,
     assignStats:Object.entries(aS).map(([k,v])=>({id:k,name:assignName[k]||k,count:v,order:assignOrder[k]||9})).sort((a,b)=>a.order-b.order),
     roleStats:Object.entries(rS).map(([k,v])=>({id:k,name:(roleMeta[k]&&roleMeta[k].name)||k,lane:LEGAL.includes(k)?'PL':'NB',count:v})).sort((a,b)=>b.count-a.count),
     docStats:Object.entries(dS).map(([k,v])=>({doc:k,count:v})).sort((a,b)=>b.count-a.count),
