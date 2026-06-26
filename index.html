@@ -294,6 +294,20 @@ tr.mx-grp td{background:#e9f2ec;font-weight:700;color:#006838;font-size:11.5px;t
 .mx-empty{padding:48px;text-align:center;color:var(--muted)}
 .mx-hint{font-size:11.5px;color:var(--muted);margin-top:10px}
 
+/* ----- Nút & chế độ toàn màn hình bảng ma trận ----- */
+.mx-fs-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border:1px solid var(--line);
+  border-radius:9px;background:#fff;color:var(--ink);font-size:12.5px;font-weight:600;cursor:pointer;
+  transition:.15s;white-space:nowrap;flex:0 0 auto}
+.mx-fs-btn:hover{background:var(--green-pale);border-color:var(--teal);color:var(--green)}
+.mx-fs-btn svg{width:16px;height:16px;flex:0 0 auto}
+#view-matrix.mx-full{position:fixed;inset:0;z-index:200;margin:0;padding:18px 20px;
+  background:var(--bg);overflow:auto;display:block}
+#view-matrix.mx-full .mx-scroll{max-height:calc(100vh - 132px)}
+#view-matrix.mx-full .mx-hint{margin-bottom:4px}
+/* dự phòng khi trình duyệt dùng Fullscreen API gốc */
+#view-matrix:fullscreen{background:var(--bg);padding:18px 20px;overflow:auto}
+#view-matrix:fullscreen .mx-scroll{max-height:calc(100vh - 132px)}
+
 /* ===== AI — Trợ lý tra cứu ===== */
 .ai-stage{position:relative;padding:128px 18px 44px;max-width:940px;margin:4px auto 0}
 .ai-box{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;min-height:520px}
@@ -444,6 +458,10 @@ tr.mx-grp td{background:#e9f2ec;font-weight:700;color:#006838;font-size:11.5px;t
       <label for="mxLV">Lĩnh vực</label>
       <select class="mx-sel" id="mxLV"></select>
       <div class="mx-legend" id="mxLegend"></div>
+      <button class="mx-fs-btn" id="mxFsBtn" type="button" title="Xem bảng toàn màn hình (phím F)">
+        <svg id="mxFsIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        <span id="mxFsLabel">Toàn màn hình</span>
+      </button>
     </div>
     <div class="mx-scroll" id="mxScroll"></div>
     <div class="mx-hint">Hàng = nhiệm vụ / thủ tục · Cột = cấp / chủ thể thẩm quyền · Ô màu = vai trò được giao (di chuột để xem đầy đủ). Cuộn ngang để xem tất cả các cấp.</div>
@@ -917,6 +935,38 @@ function renderMatrix(){
   buildMatrixSelector();
   renderMatrixTable();
 }
+
+/* ---------- Toàn màn hình bảng ma trận ---------- */
+(function(){
+  const view = document.getElementById('view-matrix');
+  const btn  = document.getElementById('mxFsBtn');
+  if(!view || !btn) return;
+  const ICON_OPEN  = '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>';
+  const ICON_CLOSE = '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>';
+
+  function isFull(){ return view.classList.contains('mx-full'); }
+
+  function setFull(on){
+    view.classList.toggle('mx-full', on);
+    document.body.style.overflow = on ? 'hidden' : '';
+    const icon = document.getElementById('mxFsIcon');
+    const label = document.getElementById('mxFsLabel');
+    if(icon)  icon.innerHTML = on ? ICON_CLOSE : ICON_OPEN;
+    if(label) label.textContent = on ? 'Thoát' : 'Toàn màn hình';
+    btn.title = on ? 'Thoát toàn màn hình (Esc / F)' : 'Xem bảng toàn màn hình (phím F)';
+  }
+
+  btn.addEventListener('click', ()=> setFull(!isFull()));
+
+  // Esc để thoát; F để bật/tắt khi đang ở tab Ma trận (bỏ qua khi gõ trong ô nhập)
+  document.addEventListener('keydown', (e)=>{
+    if(e.key==='Escape' && isFull()){ setFull(false); return; }
+    if((e.key==='f' || e.key==='F') && view.classList.contains('active')
+        && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)){
+      e.preventDefault(); setFull(!isFull());
+    }
+  });
+})();
 
 /* ---------- Bộ phát hiện khoảng trống & xung đột ---------- */
 const AUDIT_END = new Set(['P.cấp/P.duyệt','P.duyệt','Q.định']); // các bước "kết thúc"
